@@ -16,6 +16,7 @@ export interface SheetRun {
   stackHeight: number
   dryMethod: DryMethod
   grammage: number
+  pulpUsed: number
   measuredGap: number
   deviation: number
   schemaRev?: number

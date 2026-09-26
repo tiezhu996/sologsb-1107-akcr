@@ -16,6 +16,7 @@ export interface FiberBatch {
   cookHours: number
   bleachMethod: BleachMethod
   beatingDegree: number
+  pulpAmount: number
   operator: string
   schemaRev?: number
 }

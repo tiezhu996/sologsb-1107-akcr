@@ -7,6 +7,7 @@ import { useFiberStore } from '../stores/fiberStore'
 import { useMouldStore } from '../stores/mouldStore'
 import { useRunStore } from '../stores/runStore'
 import { DRY_METHODS, STRIPE_DIRECTIONS, type DryMethod, type SheetRunInput, type StripeDirection } from '../types/sheet-run'
+import { calculatePulpUsageKg, formatPulpKg, isPulpDepleted, remainingPulpKg, sumPulpUsedByBatch } from '../utils/pulp'
 import { calculateDeviation, getGapConclusion, isGapOutOfTolerance } from '../utils/stripe'
 
 function todayIso(): string {
@@ -24,6 +25,7 @@ const emptyRunForm: SheetRunInput = {
   stackHeight: 42,
   dryMethod: '火墙',
   grammage: 32,
+  pulpUsed: 0,
   measuredGap: 1.1,
   deviation: 0,
 }
@@ -76,6 +78,17 @@ export default function RunBoard() {
   const selectedMould = mouldById.get(form.mouldId) ?? moulds[0]
   const formDeviation = calculateDeviation(form.measuredGap, selectedMould?.stripeGap ?? form.measuredGap)
   const latestRun = runs[0]
+  const usedByBatch = useMemo(() => sumPulpUsedByBatch(runs), [runs])
+  const remainingByBatch = useMemo(
+    () => new Map(batches.map((batch) => [batch.id, remainingPulpKg(batch.pulpAmount, usedByBatch.get(batch.id ?? -1) ?? 0)])),
+    [batches, usedByBatch],
+  )
+  const selectedBatch = batchById.get(form.batchId)
+  const formPulpUsed = selectedMould ? calculatePulpUsageKg(form.grammage, selectedMould.frameW, selectedMould.frameH, form.stackHeight) : 0
+  const selectedRemaining = remainingByBatch.get(form.batchId)
+  const pulpShortage = selectedBatch && selectedRemaining !== undefined && formPulpUsed > selectedRemaining
+    ? Number((formPulpUsed - selectedRemaining).toFixed(3))
+    : 0
 
   const updateForm = <K extends keyof SheetRunInput,>(key: K, value: SheetRunInput[K]) => {
     setForm((current) => ({ ...current, [key]: value }))
@@ -92,7 +105,7 @@ export default function RunBoard() {
   const handleSubmit = async () => {
     if (!form.runNo.trim() || !form.operator.trim() || form.measuredGap <= 0 || form.grammage <= 0) return
     setSubmitting(true)
-    const created = await addRun({ ...form, runNo: form.runNo.trim(), operator: form.operator.trim(), deviation: formDeviation })
+    const created = await addRun({ ...form, runNo: form.runNo.trim(), operator: form.operator.trim(), pulpUsed: formPulpUsed, deviation: formDeviation })
     setSubmitting(false)
     if (created) {
       setForm(emptyRunForm)
@@ -134,7 +147,15 @@ export default function RunBoard() {
               <Grid item xs={6} md={2.5}>
                 <TextField select fullWidth label="纤维料批" value={form.batchId} onChange={(event) => updateForm('batchId', Number(event.target.value))} SelectProps={{ native: true, inputProps: { 'data-testid': 'field-batchId' } }}>
                   {!batches.some((batch) => batch.id === form.batchId) && <option value={form.batchId}>料批数据载入中</option>}
-                  {batches.map((batch) => <option key={batch.id} value={batch.id}>{batch.batchNo} · {batch.material}</option>)}
+                  {batches.map((batch) => {
+                    const remaining = remainingByBatch.get(batch.id ?? -1) ?? batch.pulpAmount
+                    const depleted = isPulpDepleted(remaining)
+                    return (
+                      <option key={batch.id} value={batch.id}>
+                        {batch.batchNo} · {batch.material} · 余 {formatPulpKg(remaining)}{depleted ? '（已见底）' : ''}
+                      </option>
+                    )
+                  })}
                 </TextField>
               </Grid>
               <Grid item xs={12} md={2}><TextField fullWidth type="date" label="抄纸日期" value={form.runDate} onChange={(event) => updateForm('runDate', event.target.value)} InputLabelProps={{ shrink: true }} inputProps={{ 'data-testid': 'field-runDate' }} /></Grid>
@@ -156,6 +177,13 @@ export default function RunBoard() {
                 <RulerInput label="实测帘纹间距" value={form.measuredGap} onChange={(value) => updateForm('measuredGap', value)} min={0.1} max={5} step={0.01} testId="field-measuredGap" helperText={`${getGapConclusion(formDeviation)}，允许偏差 ±0.2 mm`} />
               </Grid>
             </Grid>
+            {selectedBatch && (
+              <Alert severity={pulpShortage > 0 ? 'error' : 'info'} sx={{ mt: 2 }} data-testid="pulp-balance">
+                本槽预计耗浆 {formPulpUsed.toFixed(2)} 公斤（克重 {form.grammage} g/m² × 帘框 {selectedMould ? `${selectedMould.frameW}×${selectedMould.frameH} cm` : '待定'} × 叠高 {form.stackHeight} 张），
+                料批 {selectedBatch.batchNo} 剩余 {formatPulpKg(selectedRemaining ?? selectedBatch.pulpAmount)}。
+                {pulpShortage > 0 ? `余浆不够，还差 ${pulpShortage.toFixed(2)} 公斤，这槽先保存不了。` : '余浆够用，保存后从该料批扣减。'}
+              </Alert>
+            )}
             <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1.5, mt: 2.5 }}>
               <Button onClick={() => setShowForm(false)}>取消</Button>
               <Button variant="contained" onClick={handleSubmit} disabled={submitting} data-testid="submit-run">保存工序</Button>
@@ -238,7 +266,7 @@ export default function RunBoard() {
                   </TableCell>
                   <TableCell>
                     <Typography variant="body2">{run.stripeDirection} · 荡料 {run.dipCount} 次</Typography>
-                    <Typography variant="caption" color="text.secondary">叠高 {run.stackHeight} 张 · {run.dryMethod} · 帘框 {cmToMm(mould?.frameW ?? 0)} × {cmToMm(mould?.frameH ?? 0)} mm</Typography>
+                    <Typography variant="caption" color="text.secondary">叠高 {run.stackHeight} 张 · {run.dryMethod} · 帘框 {cmToMm(mould?.frameW ?? 0)} × {cmToMm(mould?.frameH ?? 0)} mm · 耗浆 {run.pulpUsed.toFixed(2)} 公斤</Typography>
                   </TableCell>
                   <TableCell align="right">{run.grammage} g/m²</TableCell>
                   <TableCell sx={{ minWidth: 270 }}>
