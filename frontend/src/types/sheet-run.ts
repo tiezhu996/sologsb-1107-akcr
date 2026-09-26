@@ -18,6 +18,7 @@ export interface SheetRun {
   grammage: number
   measuredGap: number
   deviation: number
+  pulpConsumedKg: number
   schemaRev?: number
 }
 

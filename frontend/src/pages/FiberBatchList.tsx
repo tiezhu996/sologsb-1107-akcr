@@ -4,6 +4,7 @@ import { RulerInput } from '../components/common/RulerInput'
 import { useFiberStore } from '../stores/fiberStore'
 import { useRunStore } from '../stores/runStore'
 import { BLEACH_METHODS, COOK_AGENTS, FIBER_MATERIALS, type FiberBatchInput, type FiberMaterial, type CookAgent, type BleachMethod } from '../types/fiber-batch'
+import { formatPulpKg, isPulpDepleted, sumUsedPulpKg } from '../utils/pulp'
 
 const emptyFiberForm: FiberBatchInput = {
   batchNo: '',
@@ -13,6 +14,7 @@ const emptyFiberForm: FiberBatchInput = {
   cookHours: 8,
   bleachMethod: '日晒',
   beatingDegree: 32,
+  pulpAmountKg: 10,
   operator: '罗青禾',
 }
 
@@ -47,7 +49,7 @@ export default function FiberBatchList() {
   }
 
   const handleSubmit = async () => {
-    if (!form.batchNo.trim() || !form.origin.trim() || !form.operator.trim() || form.cookHours <= 0 || form.beatingDegree <= 0) return
+    if (!form.batchNo.trim() || !form.origin.trim() || !form.operator.trim() || form.cookHours <= 0 || form.beatingDegree <= 0 || !(form.pulpAmountKg > 0)) return
     setSubmitting(true)
     const created = await addFiberBatch({ ...form, batchNo: form.batchNo.trim(), origin: form.origin.trim(), operator: form.operator.trim() })
     setSubmitting(false)
@@ -97,6 +99,9 @@ export default function FiberBatchList() {
               <Grid item xs={12} md={5}>
                 <RulerInput label="打浆度" value={form.beatingDegree} onChange={(value) => updateForm('beatingDegree', value)} unit="°SR" min={10} max={60} step={1} testId="field-beatingDegree" />
               </Grid>
+              <Grid item xs={12} md={3}>
+                <TextField fullWidth type="number" label="可用浆料量" value={form.pulpAmountKg} onChange={(event) => updateForm('pulpAmountKg', Number(event.target.value))} inputProps={{ min: 0.1, max: 500, step: 0.1, 'data-testid': 'field-pulpAmountKg' }} InputProps={{ endAdornment: 'kg' }} helperText="本批可投入各槽抄纸的浆料总量" />
+              </Grid>
               <Grid item xs={12} md={4}><TextField fullWidth label="操作人" value={form.operator} onChange={(event) => updateForm('operator', event.target.value)} inputProps={{ 'data-testid': 'field-operator' }} /></Grid>
             </Grid>
             <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1.5, mt: 2.5 }}>
@@ -128,39 +133,60 @@ export default function FiberBatchList() {
       <Stack spacing={1.5}>
         {filteredBatches.map((batch) => {
           const relatedRuns = runs.filter((run) => run.batchId === batch.id)
+          const usedPulpKg = sumUsedPulpKg(relatedRuns)
+          const remainingPulpKg = Number((batch.pulpAmountKg - usedPulpKg).toFixed(3))
+          const depleted = isPulpDepleted(remainingPulpKg)
+          const pulpRate = batch.pulpAmountKg > 0 ? Math.min(100, (usedPulpKg / batch.pulpAmountKg) * 100) : 0
           return (
             <Accordion key={batch.id ?? batch.batchNo} data-testid="row-fiber" disableGutters sx={{ border: '1px solid #ddd2bd', borderRadius: '10px !important', '&::before': { display: 'none' } }}>
               <AccordionSummary expandIcon={<Box component="span" aria-hidden="true" sx={{ fontSize: 20, lineHeight: 1 }}>⌄</Box>}>
                 <Grid container spacing={1.5} alignItems="center" sx={{ width: '100%' }}>
                   <Grid item xs={12} sm={3} md={2}>
-                    <Typography sx={{ fontWeight: 800 }}>{batch.batchNo}</Typography>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexWrap: 'wrap' }}>
+                      <Typography sx={{ fontWeight: 800 }}>{batch.batchNo}</Typography>
+                      {depleted && <Chip size="small" label="见底" color="warning" data-testid={`chip-depleted-${batch.id}`} />}
+                    </Box>
                     <Typography variant="caption" color="text.secondary">{batch.origin}</Typography>
                   </Grid>
                   <Grid item xs={6} sm={2}><Chip label={batch.material} color={batch.material === '构皮' ? 'success' : 'default'} variant="outlined" /></Grid>
                   <Grid item xs={6} sm={3} md={2}><Typography variant="body2">{batch.cookAgent} · {batch.cookHours} 小时</Typography></Grid>
-                  <Grid item xs={12} sm={4} md={3}>
+                  <Grid item xs={12} sm={4} md={2}>
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                       <Typography variant="body2" sx={{ minWidth: 54 }}>{batch.beatingDegree}°SR</Typography>
                       <LinearProgress variant="determinate" value={batch.beatingDegree} color="success" sx={{ flex: 1, height: 8, borderRadius: 4 }} />
                     </Box>
                   </Grid>
-                  <Grid item xs={12} md={3}><Typography variant="body2" color="text.secondary">{batch.bleachMethod} · {batch.operator} · 引用 {relatedRuns.length} 次</Typography></Grid>
+                  <Grid item xs={12} md={3}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <Box sx={{ minWidth: 116 }}>
+                        <Typography variant="body2" sx={{ fontWeight: 700, color: depleted ? 'warning.dark' : undefined }}>
+                          剩 {formatPulpKg(remainingPulpKg)}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">已用 {formatPulpKg(usedPulpKg)} / {formatPulpKg(batch.pulpAmountKg)}</Typography>
+                      </Box>
+                      <LinearProgress variant="determinate" value={pulpRate} color={depleted ? 'warning' : 'success'} sx={{ flex: 1, height: 8, borderRadius: 4 }} />
+                    </Box>
+                  </Grid>
+                  <Grid item xs={12} md={3}><Typography variant="body2" color="text.secondary">{batch.bleachMethod} · {batch.operator} · 引用 {relatedRuns.length} 槽</Typography></Grid>
                 </Grid>
               </AccordionSummary>
               <AccordionDetails sx={{ bgcolor: '#faf6ec' }}>
                 <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mb: 1.5 }}>
                   <Chip size="small" label={`平均打浆度 ${averageDegree.toFixed(1)}°SR`} />
                   <Chip size="small" label={batch.beatingDegree >= 35 ? '细浆，适合薄页' : batch.beatingDegree >= 29 ? '中细浆，成纸兼顾韧性' : '粗浆，适合厚实纸页'} />
+                  <Chip size="small" color={depleted ? 'warning' : 'success'} variant={depleted ? 'filled' : 'outlined'} label={`浆料：已用 ${formatPulpKg(usedPulpKg)} / 剩余 ${formatPulpKg(remainingPulpKg)}`} />
                 </Box>
-                <Typography variant="subtitle2" sx={{ mb: 1 }}>引用本料批的抄纸工序</Typography>
+                <Typography variant="subtitle2" sx={{ mb: 1 }}>引用本料批的抄纸工序（逐槽扣减）</Typography>
                 {relatedRuns.length ? (
                   <Table size="small">
-                    <TableHead><TableRow><TableCell>工序号</TableCell><TableCell>日期</TableCell><TableCell>操作人</TableCell><TableCell align="right">克重</TableCell><TableCell align="right">实测间距</TableCell></TableRow></TableHead>
+                    <TableHead><TableRow><TableCell>工序号</TableCell><TableCell>日期</TableCell><TableCell>操作人</TableCell><TableCell align="right">克重</TableCell><TableCell align="right">本槽耗浆</TableCell><TableCell align="right">实测间距</TableCell></TableRow></TableHead>
                     <TableBody>
                       {relatedRuns.map((run) => (
                         <TableRow key={run.id ?? run.runNo}>
                           <TableCell>{run.runNo}</TableCell><TableCell>{run.runDate}</TableCell><TableCell>{run.operator}</TableCell>
-                          <TableCell align="right">{run.grammage} 克/平方米</TableCell><TableCell align="right">{run.measuredGap.toFixed(2)} mm</TableCell>
+                          <TableCell align="right">{run.grammage} 克/平方米</TableCell>
+                          <TableCell align="right">{formatPulpKg(run.pulpConsumedKg)}</TableCell>
+                          <TableCell align="right">{run.measuredGap.toFixed(2)} mm</TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
